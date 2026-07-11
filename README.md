@@ -10,6 +10,7 @@
 - 每分钟检查一次当前 Socks5 出口
 - 当前出口异常时自动探测并切换到其他健康端口
 - 自动切换失败时恢复原配置
+- GitHub 直连失败时通过 Alice Socks5 下载 tun2socks
 - 保留手动切换、更新和卸载功能
 
 ## 快速开始
@@ -27,6 +28,9 @@ sudo ./onekey-tun2socks.sh -i alice
 ```
 
 其他安装模式已经移除，`-i legend`、`-i akile` 和 `-i custom` 会被拒绝。
+
+安装程序会先尝试直连 GitHub 下载 tun2socks。直连失败时，先使用安装时选择的
+Alice 端口下载，再依次尝试其余端口；不再临时修改系统 DNS。
 
 ## 健康检查
 
@@ -88,6 +92,13 @@ journalctl -u tun2socks.service
 ```
 
 ## 版本记录
+
+### v1.2.1
+
+- 移除失效的 DNS64 下载流程
+- GitHub 直连失败时使用 Alice Socks5 兜底下载
+- 首选端口不可用时依次尝试其他 Alice 端口
+- 下载完成后检查 ELF 文件头，避免安装错误响应内容
 
 ### v1.2.0
 
