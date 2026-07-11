@@ -1,90 +1,78 @@
-# 给VPS一键添加Socks5出口
+# 给 VPS 一键添加 Alice Socks5 出口
 
-## 更新日志
-v1.1.5 同时支持Alice/Akile模式切换节点
+通过 [hev-socks5-tunnel](https://github.com/heiher/hev-socks5-tunnel) 创建 TUN
+设备，将 VPS 的 IPv4 流量转发到 Alice Socks5 出口。
 
-v1.1.4 新增Akile服务商出口
+## 功能
 
-v1.1.3 更新Alice家宽出口
-
-v1.1.2 移除失效的DNS64/NAT64服务器
-
-v1.1.1 更新Alice出口提示
-
-v1.1.0 添加自定义出口节点配置功能
-
-v1.0.9 过滤本地路由，防止回环
-
-v1.0.8 无聊的重构
-
-v1.0.7 下载tun2socks时使用自建DNS64/NAT64服务器，确保服务可控（仅Alice机型可用）
-
-v1.0.6 无聊的更新（重构了一些函数）
-
-v1.0.5 新增备用DNS64服务器组（@baipiaoking88）
-
-v1.0.4 修复原先systemd中的错误，并在启用tun设备后增加1秒延时（@baipiaoking88）
-
-v1.0.3 解决无IPv4的机子'RTNETLINK answers: Network is unreachable'报错（其实报错也无影响）
-
-v1.0.2 更新Alice出口（移除香港机房IP）
+- 仅保留 Alice 出口，支持端口 `10001-10008`
+- 安装时手动选择初始出口
+- 每分钟检查一次当前 Socks5 出口
+- 当前出口异常时自动探测并切换到其他健康端口
+- 自动切换失败时恢复原配置
+- 保留手动切换、更新和卸载功能
 
 ## 快速开始
 
-### 以下命令适用于Alice的免费机
 ```bash
-curl -L https://raw.githubusercontent.com/hkfires/onekey-tun2socks/main/onekey-tun2socks.sh -o onekey-tun2socks.sh && chmod +x onekey-tun2socks.sh && sudo ./onekey-tun2socks.sh -i alice
-```
-
-> 注意事项：有IPv4的Alice机型使用Alice家宽Socks5出口时，需手动修改DNS（建议使用Alice V6的解锁DNS），由于家宽IP不在Alice V4 DNS的白名单内，会导致解析失败；机房Socks5出口不受此影响。
-
-### 以下命令适用于LegendVPS的纯IPv6免费机（由于LegendVPS已清退免费鸡，出口可能已失效）
-```bash
-curl -L https://raw.githubusercontent.com/hkfires/onekey-tun2socks/main/onekey-tun2socks.sh -o onekey-tun2socks.sh && chmod +x onekey-tun2socks.sh && sudo ./onekey-tun2socks.sh -i legend
-```
-
-### 以下命令适用于Akile ASN下的VPS
-```bash
-curl -L https://raw.githubusercontent.com/hkfires/onekey-tun2socks/main/onekey-tun2socks.sh -o onekey-tun2socks.sh && chmod +x onekey-tun2socks.sh && sudo ./onekey-tun2socks.sh -i akile
-```
-
-### 卸载
-```bash
-curl -L https://raw.githubusercontent.com/hkfires/onekey-tun2socks/main/onekey-tun2socks.sh -o onekey-tun2socks.sh && chmod +x onekey-tun2socks.sh && sudo ./onekey-tun2socks.sh -r
-```
-
-## 手动下载运行
-
-1. 下载脚本：
-```bash
-curl -L https://raw.githubusercontent.com/hkfires/onekey-tun2socks/main/onekey-tun2socks.sh -o onekey-tun2socks.sh
-```
-
-2. 添加执行权限：
-```bash
+curl -L https://raw.githubusercontent.com/BakaNoble/onekey-tun2socks/main/onekey-tun2socks.sh -o onekey-tun2socks.sh
 chmod +x onekey-tun2socks.sh
+sudo ./onekey-tun2socks.sh -i
 ```
 
-3. 查看帮助信息：
-```bash
-./onekey-tun2socks.sh -h
-```
+为了兼容旧命令，也可以使用：
 
-4. 运行脚本：
 ```bash
-# 安装 Alice 版本
 sudo ./onekey-tun2socks.sh -i alice
+```
 
-# 安装 Legend 版本（出口可能已失效）
-sudo ./onekey-tun2socks.sh -i legend
+其他安装模式已经移除，`-i legend`、`-i akile` 和 `-i custom` 会被拒绝。
 
-# 安装 Akile 版本
-sudo ./onekey-tun2socks.sh -i akile
+## 健康检查
 
-# 变更 Socks5 出口（支持 Alice/Akile）
+安装后会创建：
+
+- `tun2socks-healthcheck.service`：执行一次健康检查
+- `tun2socks-healthcheck.timer`：每分钟触发健康检查
+- `/usr/local/bin/tun2socks-healthcheck`：健康检查和自动切换脚本
+- `/etc/tun2socks/healthcheck.env`：健康检查参数
+
+当前端口连续检测失败后，脚本会依次检查其他 Alice 端口。找到健康端口后：
+
+1. 备份 `/etc/tun2socks/config.yaml`
+2. 更新 Socks5 端口
+3. 重启 `tun2socks.service`
+4. 如果启动失败，恢复原配置并再次启动
+
+手动触发检查：
+
+```bash
+sudo systemctl start tun2socks-healthcheck.service
+```
+
+查看检查日志：
+
+```bash
+journalctl -u tun2socks-healthcheck.service
+```
+
+查看定时器：
+
+```bash
+systemctl status tun2socks-healthcheck.timer
+systemctl list-timers tun2socks-healthcheck.timer
+```
+
+## 脚本命令
+
+```bash
+# 安装
+sudo ./onekey-tun2socks.sh -i
+
+# 手动切换 Alice 端口
 sudo ./onekey-tun2socks.sh -s
 
-# 检查更新
+# 检查脚本更新
 sudo ./onekey-tun2socks.sh -u
 
 # 卸载
@@ -93,21 +81,18 @@ sudo ./onekey-tun2socks.sh -r
 
 ## 服务管理
 
-安装完成后，可以使用以下命令管理服务：
-
 ```bash
-# 查看服务状态
 systemctl status tun2socks.service
-
-# 启动服务
-systemctl start tun2socks.service
-
-# 停止服务
-systemctl stop tun2socks.service
-
-# 重启服务
 systemctl restart tun2socks.service
-
-# 查看日志
 journalctl -u tun2socks.service
 ```
+
+## 版本记录
+
+### v1.2.0
+
+- 安装模式收敛为 Alice
+- 增加 Socks5 定时健康检查
+- 当前出口异常时自动切换健康端口
+- 自动切换失败时恢复旧配置
+- 更新源和 README 下载地址切换到本仓库
