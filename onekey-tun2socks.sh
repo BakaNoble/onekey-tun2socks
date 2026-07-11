@@ -506,6 +506,12 @@ switch_alice_port() {
         exit 1
     fi
 
+    exec 9>/run/tun2socks-healthcheck.lock
+    if ! flock -w 30 9; then
+        error "健康检查正在切换节点，请稍后重试。"
+        exit 1
+    fi
+
     local current_port new_port backup
     current_port=$(awk '/^socks5:/{f=1;next} f && $1=="port:"{print $2;exit}' "$CONFIG_FILE")
     info "当前 Alice 端口: $current_port"
