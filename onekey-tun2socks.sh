@@ -4,8 +4,9 @@ set -Eeuo pipefail
 # ==============================================================================
 # Constants
 # ==============================================================================
-VERSION="1.2.0"
+VERSION="1.2.1"
 SCRIPT_URL="https://raw.githubusercontent.com/BakaNoble/onekey-tun2socks/main/onekey-tun2socks.sh"
+TUN2SOCKS_DOWNLOAD_URL="https://github.com/heiher/hev-socks5-tunnel/releases/latest/download/hev-socks5-tunnel-linux-x86_64"
 
 ALICE_ADDRESS="2a14:67c0:116::1"
 ALICE_USERNAME="alice"
@@ -29,15 +30,8 @@ PURPLE='\033[0;35m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-ALTERNATE_DNS64_SERVERS=(
-    "2a00:1098:2b::1"
-    "2a01:4f8:c2c:123f::1"
-    "2a01:4f9:c010:3f02::1"
-    "2001:67c:2b0::4"
-    "2001:67c:2b0::6"
-)
-
 ACTION=""
+ACTIVE_SOCKS_PORT=""
 
 # ==============================================================================
 # Output helpers
@@ -69,58 +63,6 @@ show_usage() {
     echo "  sudo $0 -i alice"
     echo "  sudo $0 -s"
     echo "  sudo $0 -r"
-}
-
-# ==============================================================================
-# DNS helpers used for IPv6-only hosts
-# ==============================================================================
-test_github_access() {
-    curl -fsS -m 10 https://api.github.com/ >/dev/null 2>&1
-}
-
-restore_dns_config() {
-    local resolv_conf=$1
-    local backup=$2
-    local was_immutable=$3
-
-    if [ -f "$backup" ]; then
-        cp "$backup" "$resolv_conf"
-        rm -f "$backup"
-        success "DNS 配置已恢复。"
-    else
-        warning "未找到 DNS 备份，无法自动恢复。"
-    fi
-
-    if [ "$was_immutable" = true ]; then
-        chattr +i "$resolv_conf" 2>/dev/null || warning "无法重新锁定 $resolv_conf。"
-    fi
-}
-
-prepare_github_access() {
-    local resolv_conf=$1
-    local backup=$2
-    local was_immutable=$3
-
-    if test_github_access; then
-        info "GitHub API 访问正常，无需临时修改 DNS。"
-        return 0
-    fi
-
-    warning "GitHub API 当前不可达，尝试临时使用 DNS64。"
-    cp "$resolv_conf" "$backup"
-
-    local dns_server
-    for dns_server in "2602:fc59:b0:9e::64" "${ALTERNATE_DNS64_SERVERS[@]}"; do
-        printf 'nameserver %s\n' "$dns_server" > "$resolv_conf"
-        if test_github_access; then
-            success "DNS64 $dns_server 可用。"
-            return 0
-        fi
-    done
-
-    restore_dns_config "$resolv_conf" "$backup" "$was_immutable"
-    error "所有 DNS64 均无法访问 GitHub API。"
-    return 1
 }
 
 # ==============================================================================
@@ -410,62 +352,80 @@ EOF
 # Installation and removal
 # ==============================================================================
 download_tun2socks() {
-    local resolv_conf="/etc/resolv.conf"
-    local backup="/tmp/tun2socks-resolv.conf.$$"
-    local was_immutable=false
+    local preferred_port=$1
+    local temp_file candidate magic
+    local downloaded=false
+    local candidates=("$preferred_port")
 
-    if lsattr -d "$resolv_conf" 2>/dev/null | grep -q -- '-i-'; then
-        chattr -i "$resolv_conf"
-        was_immutable=true
+    temp_file=$(mktemp /tmp/tun2socks-download.XXXXXX)
+    trap 'rm -f "$temp_file"' INT TERM ERR
+
+    for candidate in "${ALICE_PORTS[@]}"; do
+        if [ "$candidate" != "$preferred_port" ]; then
+            candidates+=("$candidate")
+        fi
+    done
+
+    step "尝试直连 GitHub 下载 tun2socks..."
+    if curl -fL --connect-timeout 5 --max-time 30 --retry 1 \
+        -o "$temp_file" "$TUN2SOCKS_DOWNLOAD_URL"; then
+        downloaded=true
+        success "已通过当前网络直连下载 tun2socks。"
+    else
+        warning "直连 GitHub 下载失败，改用 Alice Socks5 兜底。"
+        rm -f "$temp_file"
+
+        for candidate in "${candidates[@]}"; do
+            step "尝试通过 Alice 端口 $candidate 下载..."
+            if curl -fL --connect-timeout 5 --max-time 30 \
+                --socks5-hostname "[$ALICE_ADDRESS]:$candidate" \
+                --proxy-user "$ALICE_USERNAME:$ALICE_PASSWORD" \
+                -o "$temp_file" "$TUN2SOCKS_DOWNLOAD_URL"; then
+                ACTIVE_SOCKS_PORT="$candidate"
+                downloaded=true
+                success "已通过 Alice 端口 $candidate 下载 tun2socks。"
+                break
+            fi
+            rm -f "$temp_file"
+        done
     fi
 
-    trap 'restore_dns_config "$resolv_conf" "$backup" "$was_immutable"' INT TERM ERR
-
-    prepare_github_access "$resolv_conf" "$backup" "$was_immutable"
-
-    local repo="heiher/hev-socks5-tunnel"
-    local release_json download_url
-    release_json=$(curl -fsSL "https://api.github.com/repos/$repo/releases/latest")
-    download_url=$(
-        printf '%s\n' "$release_json" |
-            grep '"browser_download_url"' |
-            grep 'linux-x86_64' |
-            sed -n '1p' |
-            cut -d '"' -f 4
-    )
-
-    if [ -z "$download_url" ]; then
-        error "未找到 linux-x86_64 版本的 tun2socks。"
+    if [ "$downloaded" != true ]; then
+        trap - INT TERM ERR
+        rm -f "$temp_file"
+        error "直连和全部 Alice Socks5 端口均无法下载 tun2socks。"
         return 1
     fi
 
-    step "下载 tun2socks: $download_url"
-    mkdir -p "$(dirname "$BINARY_PATH")"
-    curl -fL --retry 3 -o "$BINARY_PATH" "$download_url"
-    chmod 755 "$BINARY_PATH"
-
-    if [ -f "$backup" ]; then
-        restore_dns_config "$resolv_conf" "$backup" "$was_immutable"
-    elif [ "$was_immutable" = true ]; then
-        chattr +i "$resolv_conf" 2>/dev/null || true
+    magic=$(od -An -tx1 -N4 "$temp_file" | tr -d ' \n')
+    if [ "$magic" != "7f454c46" ]; then
+        trap - INT TERM ERR
+        rm -f "$temp_file"
+        error "下载结果不是有效的 ELF 程序，安装已中止。"
+        return 1
     fi
 
+    mkdir -p "$(dirname "$BINARY_PATH")"
+    install -m 755 "$temp_file" "$BINARY_PATH"
+
     trap - INT TERM ERR
+    rm -f "$temp_file"
 }
 
 install_tun2socks() {
+    local socks_port
+    socks_port=$(select_alice_port)
+    ACTIVE_SOCKS_PORT="$socks_port"
+
+    download_tun2socks "$socks_port"
+
     step "停止旧服务并清理旧规则..."
     systemctl stop tun2socks-healthcheck.timer 2>/dev/null || true
     systemctl stop tun2socks.service 2>/dev/null || true
     cleanup_ip_rules
 
-    download_tun2socks
-
-    local socks_port
-    socks_port=$(select_alice_port)
-
     step "生成 Alice 配置和 systemd 服务..."
-    write_tun2socks_config "$socks_port"
+    write_tun2socks_config "$ACTIVE_SOCKS_PORT"
     write_tun2socks_service
     write_healthcheck_files
 
@@ -473,7 +433,7 @@ install_tun2socks() {
     systemctl enable --now tun2socks.service
     systemctl enable --now tun2socks-healthcheck.timer
 
-    success "安装完成，当前 Alice 端口为 $socks_port。"
+    success "安装完成，当前 Alice 端口为 $ACTIVE_SOCKS_PORT。"
     info "健康检查每分钟运行一次，当前端口异常时会自动切换。"
     info "立即检查：systemctl start tun2socks-healthcheck.service"
     info "查看日志：journalctl -u tun2socks-healthcheck.service"
@@ -652,4 +612,6 @@ main() {
     esac
 }
 
-main "$@"
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    main "$@"
+fi
